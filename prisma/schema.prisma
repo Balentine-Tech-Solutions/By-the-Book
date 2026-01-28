@@ -1,0 +1,305 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Studio owner/manager
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  password      String
+  role          UserRole  @default(STUDIO_OWNER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  studios       Studio[]
+  accounts      Account[]
+  sessions      Session[]
+}
+
+enum UserRole {
+  STUDIO_OWNER
+  STAFF
+  CLIENT
+}
+
+// Studio information
+model Studio {
+  id            String    @id @default(cuid())
+  name          String
+  description   String?
+  address       String?
+  phone         String?
+  email         String?
+  website       String?
+  logo          String?
+  timezone      String    @default("America/New_York")
+  
+  // Business settings
+  hourlyRate    Float     @default(100)
+  bookingBuffer Int       @default(15) // Minutes between sessions
+  minBookingTime Int      @default(60) // Minimum session duration
+  maxBookingTime Int      @default(480) // Maximum session duration
+  
+  // Payment settings
+  requireDeposit Boolean  @default(true)
+  depositAmount  Float    @default(50) // Percentage or fixed amount
+  depositType    String   @default("PERCENTAGE") // PERCENTAGE or FIXED
+  
+  // Cancellation policy
+  cancellationHours Int   @default(24)
+  cancellationFee   Float @default(50) // Percentage
+  
+  ownerId       String
+  owner         User      @relation(fields: [ownerId], references: [id])
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  rooms         Room[]
+  bookings      Booking[]
+  services      Service[]
+  availability  StudioAvailability[]
+  clients       Client[]
+  reviews       Review[]
+  
+  @@index([ownerId])
+}
+
+// Recording rooms/spaces within a studio
+model Room {
+  id            String    @id @default(cuid())
+  name          String
+  description   String?
+  capacity      Int       @default(1)
+  hourlyRate    Float?
+  equipment     String[]  // Array of equipment available
+  
+  studioId      String
+  studio        Studio    @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  
+  bookings      Booking[]
+  
+  @@index([studioId])
+}
+
+// Services offered (mixing, mastering, recording, etc.)
+model Service {
+  id            String    @id @default(cuid())
+  name          String
+  description   String?
+  duration      Int       // Minutes
+  price         Float
+  category      String    // RECORDING, MIXING, MASTERING, PRODUCTION
+  
+  studioId      String
+  studio        Studio    @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  
+  bookings      BookingService[]
+  
+  @@index([studioId])
+}
+
+// Studio operating hours
+model StudioAvailability {
+  id            String    @id @default(cuid())
+  dayOfWeek     Int       // 0-6 (Sunday-Saturday)
+  startTime     String    // HH:MM format
+  endTime       String    // HH:MM format
+  isAvailable   Boolean   @default(true)
+  
+  studioId      String
+  studio        Studio    @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  
+  @@index([studioId])
+}
+
+// Clients who book sessions
+model Client {
+  id            String    @id @default(cuid())
+  email         String
+  name          String
+  phone         String?
+  notes         String?   // Studio notes about the client
+  
+  studioId      String
+  studio        Studio    @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  bookings      Booking[]
+  
+  @@unique([email, studioId])
+  @@index([studioId])
+}
+
+// Booking/Session
+model Booking {
+  id            String        @id @default(cuid())
+  
+  // Time
+  startTime     DateTime
+  endTime       DateTime
+  duration      Int           // Minutes
+  
+  // Status
+  status        BookingStatus @default(PENDING)
+  
+  // Client info
+  clientId      String
+  client        Client        @relation(fields: [clientId], references: [id])
+  
+  // Studio/Room
+  studioId      String
+  studio        Studio        @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  
+  roomId        String?
+  room          Room?         @relation(fields: [roomId], references: [id])
+  
+  // Pricing
+  totalAmount   Float
+  depositAmount Float?
+  depositPaid   Boolean       @default(false)
+  finalPaid     Boolean       @default(false)
+  
+  // Additional info
+  notes         String?       // Client notes/requirements
+  internalNotes String?       // Staff notes
+  
+  // Metadata
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  cancelledAt   DateTime?
+  
+  services      BookingService[]
+  payments      Payment[]
+  reviews       Review[]
+  
+  @@index([studioId])
+  @@index([clientId])
+  @@index([startTime])
+}
+
+enum BookingStatus {
+  PENDING         // Awaiting confirmation/deposit
+  CONFIRMED       // Confirmed and deposit paid
+  IN_PROGRESS     // Session is happening
+  COMPLETED       // Session finished
+  CANCELLED       // Cancelled by client or studio
+  NO_SHOW         // Client didn't show up
+}
+
+// Many-to-many relationship between bookings and services
+model BookingService {
+  id          String   @id @default(cuid())
+  
+  bookingId   String
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  serviceId   String
+  service     Service  @relation(fields: [serviceId], references: [id])
+  
+  quantity    Int      @default(1)
+  price       Float    // Price at time of booking
+  
+  @@index([bookingId])
+  @@index([serviceId])
+}
+
+// Payment records
+model Payment {
+  id            String        @id @default(cuid())
+  amount        Float
+  currency      String        @default("usd")
+  status        PaymentStatus @default(PENDING)
+  paymentType   PaymentType
+  
+  // Stripe integration
+  stripePaymentIntentId String?
+  stripeChargeId        String?
+  
+  bookingId     String
+  booking       Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  
+  @@index([bookingId])
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentType {
+  DEPOSIT
+  FINAL
+  FULL
+}
+
+// Client reviews/feedback
+model Review {
+  id            String   @id @default(cuid())
+  rating        Int      // 1-5 stars
+  comment       String?
+  
+  // Public visibility
+  isPublic      Boolean  @default(false)
+  
+  bookingId     String
+  booking       Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  
+  studioId      String
+  studio        Studio   @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  
+  createdAt     DateTime @default(now())
+  
+  @@index([studioId])
+  @@index([bookingId])
+}
+
+// NextAuth models
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
